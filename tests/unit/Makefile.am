@@ -15,11 +15,13 @@ SUBDIRS = tuple\
 	  global_interpolation\
 	  mean_field\
 	  gather_scatter\
+	  ax\
 	  krylov\
 	  bc\
 	  signal\
 	  jobctrl\
 	  device\
+	  data_types\
 	  device_math\
 	  mathops\
 	  device_mathops\
@@ -35,11 +37,17 @@ SUBDIRS = tuple\
 	  runge_kutta_scheme\
 	  time_based_controller\
 	  json_utils\
+	  utils\
+	  expression\
 	  point_interpolation\
 	  templates/parallel\
+	  bc_projector\
+	  boundary_operation\
+	  wall_sampling\
 	  templates/serial
 
 TESTS = device/device_test\
+	data_types/data_types_test\
 	tuple/tuple_test\
 	stack/stack_test\
 	point/point_test\
@@ -57,6 +65,7 @@ TESTS = device/device_test\
 	global_interpolation/global_interpolation_test\
 	mean_field/mean_field_test\
 	gather_scatter/gather_scatter_test\
+	ax/ax_test\
 	krylov/krylov_test\
 	bc/bc_test\
 	signal/signal_test\
@@ -76,8 +85,13 @@ TESTS = device/device_test\
 	runge_kutta_scheme/runge_kutta_scheme_test\
 	time_based_controller/time_based_controller_test\
 	json_utils/json_utils_test\
+	utils/read_duration_test\
+	expression/expression_test\
 	point_interpolation/point_interpolation_test\
 	templates/parallel/parallel_test\
+	bc_projector/bc_projector_test\
+	boundary_operation/boundary_operation_test\
+	wall_sampling/wall_sampling_test\
 	templates/serial/serial_test
 
 # Note we need to list .pf and runner scripts manually
@@ -85,11 +99,13 @@ EXTRA_DIST = \
 	mesh/test_mesh_parallel.pf\
 	quad/test_quad.pf\
 	gather_scatter/test_gather_scatter_parallel.pf\
+	ax/test_ax_factory.pf\
 	krylov/test_krylov.pf\
 	hex/test_hex.pf\
 	tet/test_tet.pf\
 	tri/test_tri.pf\
 	bc/test_bc.pf\
+	bc/bc_test\
 	tuple/test_tuple.pf\
 	point/test_point.pf\
 	signal/test_signal.pf\
@@ -100,6 +116,8 @@ EXTRA_DIST = \
 	global_interpolation/test_glob_interp_par.pf\
 	mean_field/test_mean_field_parallel.pf\
 	device/test_device.pf\
+	data_types/test_host_array_types.pf\
+	data_types/test_device_array_types.pf\
 	uset/test_uset_i4.pf\
 	uset/test_uset_r8.pf\
 	uset/test_uset_i8.pf\
@@ -144,6 +162,8 @@ EXTRA_DIST = \
 	scratch_registry/test_field_scratch_registry.pf\
 	scratch_registry/test_vector_scratch_registry.pf\
 	scratch_registry/test_matrix_scratch_registry.pf\
+	scratch_registry/test_host_scratch_registry.pf\
+	scratch_registry/test_device_scratch_registry.pf\
 	fast3d/test_fd_weights_full.pf\
 	fast3d/test_setup_intp.pf\
 	time_scheme/test_bdf.pf\
@@ -152,9 +172,19 @@ EXTRA_DIST = \
 	time_scheme_controller/test_time_scheme_controller.pf\
 	runge_kutta_scheme/test_runge_kutta_scheme.pf\
 	json_utils/test_json_utils.pf\
+	utils/test_read_duration.pf\
+	expression/test_expression.pf\
 	time_based_controller/test_time_based_controller.pf\
 	point_interpolation/test_point_interpolation_parallel.pf\
+	bc_projector/bc_projector_test\
 	point_interpolation/point_interpolation_test\
+	bc_projector/test_bc_projector.pf\
+	bc_projector/test_coupled_bc_projector.pf\
+	boundary_operation/test_boundary_operation.pf\
+	wall_sampling/test_base.pf\
+	wall_sampling/test_gll.pf\
+	wall_sampling/test_distance.pf\
+	wall_sampling/wall_sampling_test\
 	templates/parallel/test_parallel.pf\
 	templates/parallel/parallel_test\
 	templates/serial/test_serial.pf

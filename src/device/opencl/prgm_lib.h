@@ -23,6 +23,12 @@ extern void *zero_dirichlet_program;
 /** Device Symmetry kernels */
 extern void *symmetry_program;
 
+/** Device mixed BC constraint kernels */
+extern void *constrain_mixed_bc_program;
+
+/** Device coupled vector BC projector kernels */
+extern void *coupled_vector_bc_projector_program;
+
 /** Device Facet normal kernels */
 extern void *facet_normal_program;
 
@@ -53,6 +59,9 @@ extern void *cfl_program;
 /** Device Velocity gradient kernels */
 extern void *opgrad_program;
 
+/** Device cyclic boundary rotation kernels */
+extern void *rotate_program;
+
 /** Device Gather-Scatter kernels */
 extern void *gs_program;
 
@@ -74,8 +83,8 @@ extern void *pnpn_res_program;
 /** Device pnpn residual kernels (stress formulation) */
 extern void *pnpn_stress_res_program;
 
-/** Device euler residual kernels */
-extern void *euler_res_program;
+/** Device compressible residual kernels */
+extern void *compressible_res_program;
 
 /** Device compressible ops kernels */
 extern void *compressible_ops_compute_max_wave_speed_program;
@@ -93,6 +102,9 @@ extern void *schwarz_program;
 
 /** Device dong kernels */
 extern void *dong_program;
+
+/** Device Cai-Sagaut Model-II kernels */
+extern void *cai_sagaut_model_ii_program;
 
 /** Device coef kernels */
 extern void *coef_program;

@@ -1,4 +1,4 @@
-! Copyright (c) 2019-2025, The Neko Authors
+! Copyright (c) 2019-2026, The Neko Authors
 ! All rights reserved.
 !
 ! Redistribution and use in source and binary forms, with or without
@@ -32,10 +32,11 @@
 !
 !> Master module
 module neko
-  use num_types, only : rp, sp, dp, qp, c_rp
+  use num_types, only : rp, sp, dp, qp, c_rp, c_dp
   use comm
   use utils
   use logger
+  use mask
   use math, only : abscmp, rzero, izero, row_zero, rone, copy, cmult, cadd, &
        cfill, glsum, glmax, glmin, chsign, vlmax, vlmin, invcol1, invcol3, &
        invers2, vcross, vdot2, vdot3, vlsc3, vlsc2, add2, add3, add4, sub2, &
@@ -64,11 +65,17 @@ module neko
   use gather_scatter
   use krylov
   use coefs, only : coef_t
-  use bc, only : bc_t
+  use bc, only : bc_t, BC_DIRICHLET, BC_MIXED_CONSTRAINS_NORMAL, &
+       BC_MIXED_CONSTRAINS_TANGENT, BC_NEUMANN
+  use mixed_bc, only : mixed_bc_t
+  use scalar_bc_projector, only : scalar_bc_projector_t
+  use vector_bc_projector, only : segregated_vector_bc_projector_t, &
+       coupled_vector_bc_projector_t
   use zero_dirichlet, only : zero_dirichlet_t
   use bc_list, only : bc_list_t
   use dirichlet, only : dirichlet_t
-  use ax_product, only : ax_t, ax_helm_factory
+  use ax_product, only : ax_t, ax_helm_allocator, ax_helm_allocate, &
+       register_ax_helm
   use parmetis, only : parmetis_partgeom, parmetis_partmeshkway
   use neko_config
   use case, only : case_t
@@ -108,6 +115,9 @@ module neko
        simulation_component_wrapper_t, simulation_component_factory, &
        simulation_component_allocator, simulation_component_allocate, &
        register_simulation_component
+  use boundary_operation, only : boundary_operation_t
+  use boundary_flux, only : boundary_flux_t
+  use boundary_data, only : boundary_data_t
   use probes, only : probes_t
   use spectral_error, only : spectral_error_t
   use profiler, only : profiler_start, profiler_stop, &
@@ -126,9 +136,11 @@ module neko
   use point_zone_registry, only : neko_point_zone_registry
   use field_dirichlet, only : field_dirichlet_t
   use field_dirichlet_vector, only : field_dirichlet_vector_t
+  use field_neumann, only : field_neumann_t
   use runtime_stats, only : neko_rt_stats
   use json_module, only : json_file
-  use json_utils, only : json_get, json_get_or_default, json_extract_item
+  use json_utils, only : json_get, json_get_or_default, json_extract_item, &
+       json_get_or_lookup
   use bc_list, only : bc_list_t
   use les_model, only : les_model_t, les_model_allocate, register_les_model, &
        les_model_factory, les_model_allocator
@@ -145,6 +157,8 @@ module neko
   use source_term, only : source_term_t, source_term_allocate, &
        register_source_term, source_term_factory, source_term_allocator
   use user_access_singleton, only : neko_user_access
+  use ale_manager, only : neko_ale
+  use hdf5_session, only : hdf5_session_init, hdf5_session_finalize
   use, intrinsic :: iso_fortran_env
   use mpi_f08
   !$ use omp_lib
@@ -169,6 +183,7 @@ contains
     call neko_mpi_types_init
     call jobctrl_init
     call device_init
+    call hdf5_session_init
 
     call neko_log%init()
     call neko_registry%init()
@@ -273,13 +288,17 @@ contains
        call C%free()
     end if
 
+    call neko_simcomps%free()
+
     call neko_registry%free()
     call neko_user_access%free()
     call neko_log%free()
 
-    call device_finalize
+    call hdf5_session_finalize
+
     call neko_mpi_types_free
     call comm_free
+    call device_finalize
   end subroutine neko_finalize
 
 
@@ -364,13 +383,15 @@ contains
        write(log_buf(13:), '(a)') 'Accelerator (HIP)'
     else if (NEKO_BCKND_OPENCL .eq. 1) then
        write(log_buf(13:), '(a)') 'Accelerator (OpenCL)'
+    else if (NEKO_BCKND_METAL .eq. 1) then
+       write(log_buf(13:), '(a)') 'Accelerator (Metal)'
     else
        write(log_buf(13:), '(a)') 'CPU'
     end if
     call neko_log%message(log_buf, NEKO_LOG_QUIET)
 
     if (NEKO_BCKND_HIP .eq. 1 .or. NEKO_BCKND_CUDA .eq. 1 .or. &
-         NEKO_BCKND_OPENCL .eq. 1) then
+         NEKO_BCKND_OPENCL .eq. 1 .or. NEKO_BCKND_METAL .eq. 1) then
        write(log_buf, '(a)') 'Dev. name : '
        call device_name(log_buf(13:))
        call neko_log%message(log_buf, NEKO_LOG_QUIET)

@@ -607,7 +607,7 @@ contains
       if (oifs) then
          call this%adv%compute(u, v, w, &
               this%advx, this%advy, this%advz, &
-              Xh, this%c_Xh, dm_Xh%size(), dt)
+              Xh, this%c_Xh, dm_Xh%size(), real(dt, kind=rp))
 
          call makeabf%compute_fluid(this%abx1, this%aby1, this%abz1,&
               this%abx2, this%aby2, this%abz2, &
@@ -616,7 +616,7 @@ contains
 
          call makeoifs%compute_fluid(this%advx%x, this%advy%x, this%advz%x, &
               f_x%x, f_y%x, f_z%x, &
-              rho%x, dt, n)
+              rho%x, real(dt, kind=rp), n)
       else
          call this%adv%compute(u, v, w, &
               f_x, f_y, f_z, &
@@ -628,7 +628,8 @@ contains
               rho%x, ext_bdf%advection_coeffs%x, n)
 
          call makebdf%compute_fluid(ulag, vlag, wlag, f_x%x, f_y%x, f_z%x, &
-              u, v, w, c_Xh%B, rho%x, dt, &
+              u, v, w, c_Xh%B, c_Xh%Blag, c_Xh%Blaglag, rho%x, &
+              real(dt, kind=rp), &
               ext_bdf%diffusion_coeffs%x, ext_bdf%ndiff, n)
       end if
 
@@ -647,7 +648,7 @@ contains
       ! operator preconditioned by a constant-coefficient hsmg, exactly like
       ! Nek5000's low-Mach pressure step (see lowmach_pressure_solve).
       call lowmach_pressure_solve(this, time, dt_controller, &
-           ext_bdf%diffusion_coeffs%x(1), dt, n, ksp_results(1))
+           ext_bdf%diffusion_coeffs%x(1), real(dt, kind=rp), n, ksp_results(1))
 
       call profiler_end_region('Pressure_solve', 3)
 
@@ -658,18 +659,17 @@ contains
            f_x, f_y, f_z, &
            c_Xh, msh, Xh, &
            mu_tot, rho, this%Q_T_field, &
-           ext_bdf%diffusion_coeffs%x(1), dt, dm_Xh%size())
+           ext_bdf%diffusion_coeffs%x(1), real(dt, kind=rp), dm_Xh%size())
 
-      call rotate_cyc(u_res%x, v_res%x, w_res%x, 1, c_Xh)
-      call gs_Xh%op(u_res, GS_OP_ADD, event)
+      call rotate_cyc(u_res, v_res, w_res, 1, c_Xh)
+      call gs_Xh%op(u_res%x, v_res%x, w_res%x, dm_Xh%size(), &
+           GS_OP_ADD, event)
       call device_event_sync(event)
-      call gs_Xh%op(v_res, GS_OP_ADD, event)
-      call device_event_sync(event)
-      call gs_Xh%op(w_res, GS_OP_ADD, event)
-      call device_event_sync(event)
-      call rotate_cyc(u_res%x, v_res%x, w_res%x, 0, c_Xh)
+      call rotate_cyc(u_res, v_res, w_res, 0, c_Xh)
 
-      call this%bclst_vel_res%apply(u_res, v_res, w_res, time)
+      ! Set residual to zero at strong velocity boundaries.
+      call this%bcs_vel_projector%apply(u_res%x, v_res%x, w_res%x, &
+           dm_Xh%size())
 
       call profiler_end_region('Velocity_residual', 19)
 
@@ -681,7 +681,7 @@ contains
       call profiler_start_region("Velocity_solve", 4)
       ksp_results(2:4) = this%ksp_vel%solve_coupled(Ax_vel, du, dv, dw, &
            u_res%x, v_res%x, w_res%x, n, c_Xh, &
-           this%bclst_du, this%bclst_dv, this%bclst_dw, gs_Xh, &
+           this%bcs_vel_projector, gs_Xh, &
            this%ksp_vel%max_iter)
       call profiler_end_region("Velocity_solve", 4)
       if (this%full_stress_formulation) then
@@ -693,7 +693,7 @@ contains
       end if
 
       call this%proj_vel%post_solving(du%x, dv%x, dw%x, Ax_vel, c_Xh, &
-           this%bclst_du, this%bclst_dv, this%bclst_dw, gs_Xh, n, tstep, &
+           this%bcs_vel_projector, gs_Xh, n, tstep, &
            dt_controller)
 
       if (NEKO_BCKND_DEVICE .eq. 1) then
@@ -706,8 +706,8 @@ contains
       if (this%forced_flow_rate) then
          call this%vol_flow%adjust( u, v, w, p, u_res, v_res, w_res, p_res, &
               c_Xh, gs_Xh, ext_bdf, rho%x(1,1,1,1), mu_tot, &
-              dt, time, this%bclst_dp, this%bclst_du, this%bclst_dv, &
-              this%bclst_dw, this%bclst_vel_res, Ax_vel, Ax_prs, this%ksp_prs, &
+              real(dt, kind=rp), time, this%bcs_prs_projector, &
+              this%bcs_vel_projector, Ax_vel, Ax_prs, this%ksp_prs, &
               this%ksp_vel, this%pc_prs, this%pc_vel, this%ksp_prs%max_iter, &
               this%ksp_vel%max_iter)
       end if
@@ -763,12 +763,14 @@ contains
       if (.not. this%prs_dirichlet) call ortho(p_res%x, this%glb_n_points, n)
       call gs_Xh%op(p_res, GS_OP_ADD, event)
       call device_event_sync(event)
-      call this%bclst_dp%apply_scalar(p_res%x, n, time)
+      ! Set the residual to zero at strong pressure boundaries.
+      call this%bcs_prs_projector%apply(p_res%x, p%dof%size())
 
       ! 2. A-conjugate residual projection against the TRUE variable operator
       !    (Nek5000 project1); c_Xh%h1 is still 1/rho here.
       call this%proj_prs%pre_solving(p_res%x, time%tstep, c_Xh, nl, &
-           dt_controller, Ax = Ax_prs, gs_h = gs_Xh, bclst = this%bclst_dp, &
+           dt_controller, Ax = Ax_prs, gs_h = gs_Xh, &
+           bclst = this%bcs_prs_projector, &
            string = 'Pressure')
 
       ! 3. Refresh the preconditioner on a CONSTANT-coefficient operator with
@@ -796,12 +798,12 @@ contains
       end do
       call rzero(dp%x, n)
       ksp_result = this%ksp_prs%solve(Ax_prs, dp, p_res%x, n, c_Xh, &
-           this%bclst_dp, gs_Xh)
+           this%bcs_prs_projector, gs_Xh)
       ksp_result%name = 'Pressure'
 
       ! 5. Reconstruct/store the projection basis (Nek5000 project2), update p.
-      call this%proj_prs%post_solving(dp%x, Ax_prs, c_Xh, this%bclst_dp, &
-           gs_Xh, nl, time%tstep, dt_controller)
+      call this%proj_prs%post_solving(dp%x, Ax_prs, c_Xh, &
+           this%bcs_prs_projector, gs_Xh, nl, time%tstep, dt_controller)
       call field_add2(p, dp, n)
       if (.not. this%prs_dirichlet) call ortho(p%x, this%glb_n_points, n)
 

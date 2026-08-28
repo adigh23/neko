@@ -38,7 +38,7 @@ module fld_file_data
      type(vector_t), allocatable :: s(:) !< Numbered scalar fields.
      integer :: gdim !< Spatial dimensions.
      integer :: n_scalars = 0 !< Number of numbered scalar fields.
-     real(kind=rp) :: time = 0.0 !< Time of latest sample/read.
+     real(kind=dp) :: time = 0.0 !< Time of latest sample/read.
      integer :: glb_nelv = 0 !< Global number of elements.
      integer :: nelv = 0 !< Number of elements on this rank.
      integer :: offset_el = 0 !< Element offset for this rank.
@@ -177,11 +177,11 @@ contains
          this%gdim .ne. msh%gdim)
 
     if (mesh_mismatch .and. .not. interpolate_) then
-       call neko_error("The fld file must match the current mesh! &
-       &Use 'interpolate': 'true' to enable interpolation.")
+       call neko_error("The fld file must match the current mesh! " // &
+            "Use 'interpolate': 'true' to enable interpolation.")
     else if (.not. mesh_mismatch .and. interpolate_) then
-       call neko_log%warning("You have activated interpolation but you might &
-       &still be using the same mesh.")
+       call neko_log%warning("You have activated interpolation but you " // &
+            "might still be using the same mesh.")
     end if
 
     !
@@ -222,14 +222,12 @@ contains
                 if (s_index_list(i) .eq. 0) then
                    call global_interp%evaluate(s_target_list%x(i), &
                         this%t%x, on_host = .false.)
-                else
-                   ! For scalar fields, require indices in 1:this%n_scalars
-                   if (s_index_list(i) < 1 .or. &
-                        s_index_list(i) > this%n_scalars) then
-                      call neko_error("s_index_list entry out of bounds")
-                   end if
+                else if (s_index_list(i) .ge. 1 .and. &
+                     s_index_list(i) .le. this%n_scalars) then
                    call global_interp%evaluate(s_target_list%x(i), &
                         this%s(s_index_list(i))%x, on_host = .false.)
+                else
+                   call neko_error("s_index_list entry out of bounds")
                 end if
              end do
 
@@ -269,9 +267,12 @@ contains
                 if (s_index_list(i) .eq. 0) then
                    call space_interp%map(s_target_list%x(i), &
                         this%t%x, this%nelv, Xh)
-                else
+                else if (s_index_list(i) .ge. 1 .and. &
+                     s_index_list(i) .le. this%n_scalars) then
                    call space_interp%map(s_target_list%x(i), &
                         this%s(s_index_list(i))%x, this%nelv, Xh)
+                else
+                   call neko_error("s_index_list entry out of bounds")
                 end if
              end do
 
@@ -475,7 +476,7 @@ contains
        deallocate(this%s)
     end if
     this%n_scalars = 0
-    this%time = 0.0
+    this%time = 0.0_dp
     this%glb_nelv = 0
     this%nelv = 0
     this%offset_el = 0

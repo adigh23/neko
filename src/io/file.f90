@@ -33,7 +33,7 @@
 !> Module for file I/O operations.
 module file
   use utils, only : neko_error, neko_warning, filename_suffix
-  use num_types, only : rp
+  use num_types, only : dp
   use generic_file, only : generic_file_t
   use nmsh_file, only : nmsh_file_t
   use chkp_file, only : chkp_file_t
@@ -98,7 +98,6 @@ contains
     integer, intent(in), optional :: layout
     logical, intent(in), optional :: overwrite
     character(len=80) :: suffix
-    class(generic_file_t), pointer :: q
 
     call filename_suffix(fname, suffix)
 
@@ -106,7 +105,7 @@ contains
        deallocate(this%file_type)
     end if
 
-    select case (suffix)
+    select case (trim(suffix))
     case ("rea")
        allocate(rea_file_t::this%file_type)
     case ("re2")
@@ -133,7 +132,7 @@ contains
     case ("vtkhdf")
        allocate(vtkhdf_file_t::this%file_type)
     case default
-       call neko_error('Unknown file format')
+       call neko_error('Unknown file format: "' // trim(suffix) // '"')
     end select
 
     call this%file_type%init(fname)
@@ -171,7 +170,7 @@ contains
   subroutine file_write(this, data, t)
     class(file_t), intent(inout) :: this
     class(*), intent(inout) :: data
-    real(kind=rp), intent(in), optional :: t
+    real(kind=dp), intent(in), optional :: t
 
     call this%file_type%write(data, t = t)
 

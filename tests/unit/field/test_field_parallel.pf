@@ -14,6 +14,7 @@ module test_field_parallel
   use mesh
   use dofmap
   use comm, only : NEKO_COMM, pe_rank, pe_size
+  use pfunit_comm_utils, only : comm_init_test, comm_free_test
   use neko_config
   implicit none
 
@@ -28,6 +29,7 @@ contains
 
   subroutine setUp(this)
     class(test_field), intent(inout) :: this
+    call comm_init_test(this%getMpiCommunicator())
     if (NEKO_BCKND_DEVICE .eq. 1) then
        call device_init
     end if
@@ -38,6 +40,7 @@ contains
     if (NEKO_BCKND_DEVICE .eq. 1) then
        call device_finalize
     end if
+    call comm_free_test()
   end subroutine tearDown
 
   subroutine test_field_gen_msh(msh)
@@ -88,11 +91,6 @@ contains
     integer, parameter :: LX = 4
     type(field_t) :: f_msh_Xh, f_dm
     integer :: ierr
-
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
-
-    pe_rank = this%getProcessRank()
-    pe_size = this%getNumProcesses()
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
 
@@ -124,8 +122,6 @@ contains
     type(field_t) :: f
     integer :: ierr
 
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
-
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
 
@@ -144,8 +140,6 @@ contains
     integer, parameter :: LX = 4
     type(field_t) :: f
     integer :: ierr
-
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
 
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
@@ -170,8 +164,6 @@ contains
     integer, parameter :: LX = 4
     type(field_t) :: f, g, h
     integer :: ierr
-
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
 
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
@@ -210,8 +202,6 @@ contains
     type(field_t) :: f
     integer :: ierr
 
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
-
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
 
@@ -236,8 +226,6 @@ contains
     integer, parameter :: LX = 4
     type(field_t) :: f, g
     integer :: ierr
-
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
 
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
@@ -265,14 +253,12 @@ contains
     integer :: n
     type(field_t) :: f
 
-    call MPI_Comm_dup(this%getMpiCommunicator(), NEKO_COMM%mpi_val, ierr)
-
     call test_field_gen_msh(msh)
     call Xh%init(GLL, lx, lx, lx)
     call f%init(msh, Xh, 'test')
 
     n = f%size()
-    f = 1.0_rp
+    f%x = 1.0_rp
     f%x(1, 1, 1, 1) = -3.0_rp
     f%x(lx, lx, lx, msh%nelv) = 7.0_rp
 

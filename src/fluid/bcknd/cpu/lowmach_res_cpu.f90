@@ -138,7 +138,7 @@ contains
     call col2(wa2%x, mu%x, n)
     call col2(wa3%x, mu%x, n)
 
-    call strain_rate(s11%x, s22%x, s33%x, s12%x, s13%x, s23%x, &
+    call strain_rate(s11, s22, s33, s12, s13, s23, &
          u_e, v_e, w_e, c_Xh)
 
     ! ta = 2 grad(mu)  (kept for both S^T grad mu and the low-Mach term).
