@@ -77,6 +77,7 @@ module fluid_lowmach_pnpn
   use fluid_aux, only : fluid_step_info
   use gs_ops, only : GS_OP_ADD
   use neko_config, only : NEKO_BCKND_DEVICE
+  use phmg, only : phmg_t
   use lowmach_residual, only : lowmach_prs_res_t, lowmach_vel_res_t, &
        lowmach_prs_res_factory, lowmach_vel_res_factory
   implicit none
@@ -90,6 +91,20 @@ module fluid_lowmach_pnpn
      !> Temperature clamp for the EOS (guards rho against unphysical T).
      real(kind=rp) :: T_eos_min = tiny(1.0_rp)
      real(kind=rp) :: T_eos_max = huge(1.0_rp)
+     !> phmg only. .false. (default): constant-coefficient preconditioner,
+     !! h1 = 1 on EVERY level (level 0 forced via phmg_t%unit_h1), as in
+     !! Nek5000 h1mg / nekRS pMG; GMRES absorbs 1/rho(x). .true.: push
+     !! 1/rho(x) to every level each step (phmg_t%update_coef). Measured to
+     !! STALL (residual 10 -> 0.13 after 225 GMRES its on the heated hump);
+     !! experiment switch only. Case key `case.fluid.low_mach.phmg_variable_coef`.
+     logical :: phmg_variable_coef = .false.
+     !> phmg only, with phmg_variable_coef = .false. .true. (default): level 0
+     !! is also forced to h1 = 1 during the preconditioner (pure Nek5000 h1mg /
+     !! nekRS pMG). .false.: level 0 smooths with the live 1/rho(x) while the
+     !! coarse levels stay at h1 = 1 (Chebyshev bounds estimated for h1 = 1).
+     !! Heated hump, step 1-3 GMRES its: 101/111/107 (true) vs 68/72/69
+     !! (false). Case key `case.fluid.low_mach.phmg_unit_h1_level0`.
+     logical :: phmg_unit_h1_level0 = .true.
      !> Thermal conductivity used in Q_T = div(k grad T) / (rho cp T).
      real(kind=rp) :: k_cond = 1.0_rp
      !> Specific heat at constant pressure used in the same expression.
@@ -156,8 +171,21 @@ contains
     call json_force_logical(params, 'case.fluid.full_stress_formulation', .true.)
     call json_force_string(params, 'case.fluid.velocity_solver.type', 'coupled_cg')
 
+    call json_get_or_default(params, 'case.fluid.low_mach.phmg_variable_coef', &
+         this%phmg_variable_coef, .false.)
+    call json_get_or_default(params, 'case.fluid.low_mach.phmg_unit_h1_level0', &
+         this%phmg_unit_h1_level0, .true.)
+
     ! Run the standard Pn-Pn init to set up mesh, dofmap, fields, BCs, solvers.
     call this%fluid_pnpn_t%init(msh, lx, params, user, chkp)
+
+    ! phmg: constant-coefficient (h1 = 1) preconditioner on EVERY level,
+    ! as in Nek5000 h1mg / nekRS pMG. See lowmach_pressure_solve.
+    select type (pc => this%pc_prs)
+    type is (phmg_t)
+       pc%unit_h1 = this%phmg_unit_h1_level0 .and. &
+            (.not. this%phmg_variable_coef)
+    end select
 
     ! Low-Mach parameters — all under case.fluid.low_mach, all optional.
     ! heat_first: Nek5000 step ordering (scalar solve, then rho/properties/Q_T
@@ -773,26 +801,43 @@ contains
            bclst = this%bcs_prs_projector, &
            string = 'Pressure')
 
-      ! 3. Refresh the preconditioner on a CONSTANT-coefficient operator with
-      !    h1 = 1, exactly like Nek5000: its Schwarz/FDM smoothers are
+      ! 3. Refresh the preconditioner. Two cases:
+      !    phmg: a true variable-coefficient p-multigrid. Its level 0 shares
+      !    c_Xh and so already sees h1 = 1/rho(x); push the same coefficient to
+      !    the coarse levels and the matrix-free tree-AMG, and re-estimate the
+      !    Chebyshev bounds for the new spectrum (update_coef). Every level then
+      !    smooths/solves the SAME operator GMRES is solving.
+      !    hsmg (and anything else): refresh on a CONSTANT-coefficient operator
+      !    with h1 = 1, exactly like Nek5000: its Schwarz/FDM smoothers are
       !    geometry-only (scale 1) and its coarse XXT matrix is assembled with
       !    h1 = 1 (navier8.f). In Neko's additive hsmg the coefficient enters
       !    ONLY the coarse-level solve, so any constant h1 = cref /= 1 damps
       !    the coarse correction by 1/cref relative to the (implicitly
       !    scale-1) Schwarz terms -- a component-relative skew that GMRES
-      !    cannot absorb (only a GLOBAL rescale of the whole preconditioner
-      !    leaves the iterates unchanged). h1 = 1 keeps every preconditioner
-      !    component mutually consistent, matching Nek5000 and nekRS (which
-      !    uses one constant lambda0Avg on all pMG levels AND its coarse AMG).
-      do concurrent (i = 1:n)
-         c_Xh%h1(i,1,1,1) = 1.0_rp
-      end do
+      !    cannot absorb. h1 = 1 keeps every component mutually consistent.
       c_Xh%ifh2 = .false.
-      call this%pc_prs%update()
+      select type (pc => this%pc_prs)
+      type is (phmg_t)
+         if (this%phmg_variable_coef) then
+            do concurrent (i = 1:n)
+               c_Xh%h1(i,1,1,1) = 1.0_rp / rho%x(i,1,1,1)
+            end do
+            call pc%update_coef()
+         else
+            do concurrent (i = 1:n)
+               c_Xh%h1(i,1,1,1) = 1.0_rp
+            end do
+            call pc%update()
+         end if
+      class default
+         do concurrent (i = 1:n)
+            c_Xh%h1(i,1,1,1) = 1.0_rp
+         end do
+         call pc%update()
+      end select
 
-      ! 4. Restore the TRUE variable operator and solve it with ONE flexible
-      !    GMRES pass (Nek5000 hmh_gmres). The constant-coefficient hsmg only
-      !    preconditions; GMRES handles 1/rho(x).
+      ! 4. Solve the TRUE variable operator with ONE flexible GMRES pass
+      !    (Nek5000 hmh_gmres); h1 = 1/rho(x).
       do concurrent (i = 1:n)
          c_Xh%h1(i,1,1,1) = 1.0_rp / rho%x(i,1,1,1)
       end do

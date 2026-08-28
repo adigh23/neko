@@ -55,10 +55,10 @@ module phmg
   use interpolation, only : interpolator_t
   use json_module, only : json_file
   use json_utils, only : json_get_or_default, json_get
-  use math, only : copy, col2, add2, add2s2, add2s1
+  use math, only : copy, col2, add2, add2s2, add2s1, rone
   use device, only : device_get_ptr, device_stream_wait_event, glb_cmd_queue, &
-       glb_cmd_event
-  use device_math, only : device_rzero, device_copy, device_add2, &
+       glb_cmd_event, device_memcpy, HOST_TO_DEVICE, device_map
+  use device_math, only : device_rzero, device_copy, device_add2, device_rone, &
        device_add2s2, device_invcol2, device_glsc2, device_col2, device_add2s1
   use neko_config, only : NEKO_BCKND_DEVICE
   use krylov, only : ksp_t, ksp_monitor_t, KSP_MAX_ITER, &
@@ -119,6 +119,16 @@ module phmg
      integer :: n_refresh = 0
      !> Which accelerator the Chebyshev smoother uses
      character(len=:), allocatable :: cheby_acc
+     !> Apply the preconditioner with a CONSTANT h1 = 1 on level 0 as well.
+     !! Level 0 shares the caller's coef, so for a variable-coefficient
+     !! operator (low-Mach pressure, h1 = 1/rho(x)) it would otherwise smooth
+     !! a different operator than the coarse levels, which keep the h1 = 1
+     !! they were given at init. With this set the whole hierarchy is the
+     !! constant-coefficient Poisson preconditioner of Nek5000 h1mg / nekRS
+     !! pMG; the Krylov method absorbs 1/rho(x).
+     logical :: unit_h1 = .false.
+     real(kind=rp), allocatable :: h1_save(:)
+     type(c_ptr) :: h1_save_d = C_NULL_PTR
    contains
      procedure, pass(this) :: init => phmg_init
      procedure, pass(this) :: init_from_components => &
@@ -126,6 +136,7 @@ module phmg
      procedure, pass(this) :: free => phmg_free
      procedure, pass(this) :: solve => phmg_solve
      procedure, pass(this) :: update => phmg_update
+     procedure, pass(this) :: update_coef => phmg_update_coef
      procedure, private, pass(this) :: mg_cycle => phmg_mg_cycle
   end type phmg_t
 
@@ -470,7 +481,7 @@ contains
          call device_rzero(mglvl(0)%z%x_d, n)
          call device_rzero(mglvl(0)%w%x_d, n)
 
-         call this%mg_cycle()
+         call phmg_cycle_unit_h1(this, n)
 
          call device_copy(z_d, mglvl(0)%z%x_d, n)
       else
@@ -488,7 +499,7 @@ contains
          end do
          !$omp end parallel do
 
-         call this%mg_cycle()
+         call phmg_cycle_unit_h1(this, n)
 
          !OCL NORECURRENCE, NOVREC, NOALIAS
          !DIR$ CONCURRENT
@@ -504,6 +515,40 @@ contains
     call profiler_end_region('PHMG_solve', 8)
 
   end subroutine phmg_solve
+
+  !> One V-cycle, with level-0 h1 forced to 1 when `unit_h1` is set.
+  subroutine phmg_cycle_unit_h1(this, n)
+    class(phmg_t), intent(inout) :: this
+    integer, intent(in) :: n
+
+    associate (coef => this%phmg_hrchy%lvl(0)%coef)
+      if (this%unit_h1) then
+         if (.not. allocated(this%h1_save)) then
+            allocate(this%h1_save(n))
+            if (NEKO_BCKND_DEVICE .eq. 1) then
+               call device_map(this%h1_save, this%h1_save_d, n)
+            end if
+         end if
+         if (NEKO_BCKND_DEVICE .eq. 1) then
+            call device_copy(this%h1_save_d, coef%h1_d, n)
+            call device_rone(coef%h1_d, n)
+         else
+            call copy(this%h1_save, coef%h1, n)
+            call rone(coef%h1, n)
+         end if
+      end if
+
+      call this%mg_cycle()
+
+      if (this%unit_h1) then
+         if (NEKO_BCKND_DEVICE .eq. 1) then
+            call device_copy(coef%h1_d, this%h1_save_d, n)
+         else
+            call copy(coef%h1, this%h1_save, n)
+         end if
+      end if
+    end associate
+  end subroutine phmg_cycle_unit_h1
 
   !> Bring the preconditioner back in sync after the mesh has changed.
   subroutine phmg_update(this)
@@ -532,6 +577,43 @@ contains
     this%last_metrics_version = fine_version
 
   end subroutine phmg_update
+
+  !> Push the fine-level Helmholtz coefficients (h1, h2) down to every coarse
+  !! level and invalidate the Chebyshev / AMG eigenvalue estimates.
+  !!
+  !! Level 0 shares the caller's coef, so it always sees the live h1; the
+  !! coarse levels only received a copy at init. For a variable-coefficient
+  !! operator (low-Mach pressure, h1 = 1/rho(x) changing every step) this
+  !! keeps all levels -- and the matrix-free tree-AMG on the coarsest -- on
+  !! the same operator, and the smoother bounds valid for its spectrum.
+  subroutine phmg_update_coef(this)
+    class(phmg_t), intent(inout) :: this
+    integer :: i, n
+
+    associate (mg => this%phmg_hrchy%lvl, nelv => this%msh%nelv)
+      do i = 1, this%nlvls - 1
+         n = mg(i)%dm_Xh%size()
+         call this%intrp(i)%map(mg(i)%coef%h1, mg(i-1)%coef%h1, nelv, &
+              mg(i)%Xh)
+         mg(i)%coef%ifh2 = mg(0)%coef%ifh2
+         if (mg(i)%coef%ifh2) then
+            call this%intrp(i)%map(mg(i)%coef%h2, mg(i-1)%coef%h2, nelv, &
+                 mg(i)%Xh)
+         end if
+         if (NEKO_BCKND_DEVICE .eq. 1) then
+            call device_memcpy(mg(i)%coef%h1, mg(i)%coef%h1_d, n, &
+                 HOST_TO_DEVICE, sync = .false.)
+            if (mg(i)%coef%ifh2) then
+               call device_memcpy(mg(i)%coef%h2, mg(i)%coef%h2_d, n, &
+                    HOST_TO_DEVICE, sync = .false.)
+            end if
+         end if
+      end do
+    end associate
+
+    call phmg_update_smoother_eigs(this)
+
+  end subroutine phmg_update_coef
 
 
   !> Sample the new fine coordinates on the coarse levels and rebuild their
