@@ -98,13 +98,16 @@ module fluid_lowmach_pnpn
      !! STALL (residual 10 -> 0.13 after 225 GMRES its on the heated hump);
      !! experiment switch only. Case key `case.fluid.low_mach.phmg_variable_coef`.
      logical :: phmg_variable_coef = .false.
-     !> phmg only, with phmg_variable_coef = .false. .true. (default): level 0
-     !! is also forced to h1 = 1 during the preconditioner (pure Nek5000 h1mg /
-     !! nekRS pMG). .false.: level 0 smooths with the live 1/rho(x) while the
-     !! coarse levels stay at h1 = 1 (Chebyshev bounds estimated for h1 = 1).
-     !! Heated hump, step 1-3 GMRES its: 101/111/107 (true) vs 68/72/69
-     !! (false). Case key `case.fluid.low_mach.phmg_unit_h1_level0`.
-     logical :: phmg_unit_h1_level0 = .true.
+     !> phmg only, with phmg_variable_coef = .false. .false. (default): the
+     !! coarse levels and the tree-AMG stay on the constant h1 = 1 they got at
+     !! init while the level-0 smoother sees the live 1/rho(x) (level 0 shares
+     !! c_Xh) -- the configuration the pre-merge build ran implicitly. .true.:
+     !! level 0 is also forced to h1 = 1 (pure Nek5000 h1mg / nekRS pMG).
+     !! full_train_run_13b (110K elems, lx=7, 320 ranks), pressure GMRES its
+     !! after restart warm-up: 5.7 mean / 7 max (false) vs 10.2 / 31 (true);
+     !! heated hump: 68 vs 101 at step 1. Case key
+     !! `case.fluid.low_mach.phmg_unit_h1_level0`.
+     logical :: phmg_unit_h1_level0 = .false.
      !> Thermal conductivity used in Q_T = div(k grad T) / (rho cp T).
      real(kind=rp) :: k_cond = 1.0_rp
      !> Specific heat at constant pressure used in the same expression.
@@ -174,7 +177,7 @@ contains
     call json_get_or_default(params, 'case.fluid.low_mach.phmg_variable_coef', &
          this%phmg_variable_coef, .false.)
     call json_get_or_default(params, 'case.fluid.low_mach.phmg_unit_h1_level0', &
-         this%phmg_unit_h1_level0, .true.)
+         this%phmg_unit_h1_level0, .false.)
 
     ! Run the standard Pn-Pn init to set up mesh, dofmap, fields, BCs, solvers.
     call this%fluid_pnpn_t%init(msh, lx, params, user, chkp)
